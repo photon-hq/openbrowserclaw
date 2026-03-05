@@ -388,18 +388,21 @@ export class Orchestrator {
     };
 
     const isBrowserMain = msg.groupId === DEFAULT_GROUP_ID;
+    const isImessage = msg.groupId.startsWith('im:');
     const hasTrigger = this.triggerPattern.test(msg.content.trim());
 
     console.log('[orchestrator] enqueue:', {
       groupId: msg.groupId,
       content: msg.content.slice(0, 50),
       isBrowserMain,
+      isImessage,
       hasTrigger,
       triggerPattern: this.triggerPattern.source,
       assistantName: this.assistantName,
     });
 
-    if (isBrowserMain || hasTrigger) {
+    // iMessage and browser chat always trigger; other channels need @mention
+    if (isBrowserMain || isImessage || hasTrigger) {
       stored.isTrigger = true;
       this.messageQueue.push(msg);
       console.log('[orchestrator] message queued for agent');
