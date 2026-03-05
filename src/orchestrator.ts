@@ -44,7 +44,6 @@ import { encryptValue, decryptValue } from './crypto.js';
 import { BrowserChatChannel } from './channels/browser-chat.js';
 import { TelegramChannel } from './channels/telegram.js';
 import { IMessageChannel } from './channels/imessage.js';
-import type { IMessageMode } from './channels/imessage.js';
 import { Router } from './router.js';
 import { TaskScheduler } from './task-scheduler.js';
 import { ulid } from './ulid.js';
@@ -154,16 +153,14 @@ export class Orchestrator {
       this.telegram.start();
     }
 
-    // Configure Photon iMessage if mode is set
+    // Configure iMessage if server URL + API key exist
     if (this.destroyed) return;
-    const imessageMode = (await getConfig(CONFIG_KEYS.IMESSAGE_MODE)) as IMessageMode | null;
-    console.log('[orchestrator] iMessage config from DB:', { imessageMode });
+    const imessageServerUrl = await getConfig(CONFIG_KEYS.IMESSAGE_SERVER_URL);
+    const imessageApiKey = await getConfig(CONFIG_KEYS.IMESSAGE_API_KEY);
     if (this.destroyed) return;
-    if (imessageMode && imessageMode !== 'disabled') {
-      const serverUrl = (await getConfig(CONFIG_KEYS.IMESSAGE_SERVER_URL)) || undefined;
-      const imessageApiKey = (await getConfig(CONFIG_KEYS.IMESSAGE_API_KEY)) || undefined;
-      console.log('[orchestrator] configuring iMessage:', { mode: imessageMode, serverUrl, hasApiKey: !!imessageApiKey });
-      this.imessage.configure({ mode: imessageMode, serverUrl, apiKey: imessageApiKey });
+    if (imessageServerUrl && imessageApiKey) {
+      console.log('[orchestrator] configuring iMessage:', { serverUrl: imessageServerUrl, hasApiKey: true });
+      this.imessage.configure({ serverUrl: imessageServerUrl, apiKey: imessageApiKey });
       this.imessage.onMessage((msg) => this.enqueue(msg));
       this.imessage.start();
     } else {
@@ -262,23 +259,15 @@ export class Orchestrator {
   }
 
   /**
-   * Configure Photon iMessage (local or remote mode).
-   *
-   * Local mode  — uses @photon-ai/imessage-kit directly (macOS only).
-   * Remote mode — connects to a Photon server via socket.io + REST.
+   * Configure iMessage (remote mode via Photon-managed server).
    */
-  async configureIMessage(
-    mode: IMessageMode,
-    serverUrl?: string,
-    apiKey?: string,
-  ): Promise<void> {
-    console.log('[orchestrator] configureIMessage called:', { mode, serverUrl, hasApiKey: !!apiKey });
-    await setConfig(CONFIG_KEYS.IMESSAGE_MODE, mode);
-    if (serverUrl !== undefined) await setConfig(CONFIG_KEYS.IMESSAGE_SERVER_URL, serverUrl);
-    if (apiKey !== undefined) await setConfig(CONFIG_KEYS.IMESSAGE_API_KEY, apiKey);
+  async configureIMessage(serverUrl: string, apiKey: string): Promise<void> {
+    console.log('[orchestrator] configureIMessage called:', { serverUrl, hasApiKey: !!apiKey });
+    await setConfig(CONFIG_KEYS.IMESSAGE_SERVER_URL, serverUrl);
+    await setConfig(CONFIG_KEYS.IMESSAGE_API_KEY, apiKey);
 
     this.imessage.stop();
-    this.imessage.configure({ mode, serverUrl, apiKey });
+    this.imessage.configure({ serverUrl, apiKey });
     this.imessage.onMessage((msg) => this.enqueue(msg));
     this.imessage.start();
   }
@@ -287,8 +276,7 @@ export class Orchestrator {
    * Disable iMessage integration.
    */
   async disableIMessage(): Promise<void> {
-    this.imessage.stop();
-    await setConfig(CONFIG_KEYS.IMESSAGE_MODE, '');
+    this.imessage.disable();
     await setConfig(CONFIG_KEYS.IMESSAGE_SERVER_URL, '');
     await setConfig(CONFIG_KEYS.IMESSAGE_API_KEY, '');
   }

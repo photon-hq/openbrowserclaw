@@ -1,57 +1,20 @@
 // ---------------------------------------------------------------------------
-// OpenBrowserClaw — Photon iMessage Channel
+// OpenBrowserClaw — iMessage Channel
 // ---------------------------------------------------------------------------
 //
-// Supports two modes:
-//   local  — @photon-ai/imessage-kit   (macOS only, direct SQLite DB access)
-//   remote — direct socket.io + REST    (any OS, Photon server, browser-safe)
+// Connects to a Photon-managed iMessage server via Socket.IO + REST.
+// Browser-safe — uses socket.io-client and fetch() directly.
 //
 // groupId prefix: "im:"
 // Examples:
 //   DM:    im:iMessage;-;+918527438574
 //   Group: im:iMessage;+;chat143843922472236064
-//
-// Remote mode connects directly to the Photon server using socket.io-client
-// and fetch(). No Node.js dependencies — works in the browser.
 // ---------------------------------------------------------------------------
 
 import { io, type Socket } from 'socket.io-client';
 import type { Channel, InboundMessage } from '../types.js';
 
 type MessageCallback = (msg: InboundMessage) => void;
-
-// ---------------------------------------------------------------------------
-// Local-mode types (Node only — @photon-ai/imessage-kit)
-// ---------------------------------------------------------------------------
-
-interface LocalSDK {
-  send(to: string, content: string | { text?: string; images?: string[]; files?: string[] }): Promise<{ message?: { guid?: string } }>;
-  getMessages(filter: { chatId?: string; search?: string; limit?: number; since?: Date; unreadOnly?: boolean }): Promise<{ messages: LocalMessage[] }>;
-  getUnreadMessages(): Promise<{ groups: Array<{ sender: string; messages: LocalMessage[] }>; total: number; senderCount: number }>;
-  listChats(opts?: { type?: 'all' | 'dm' | 'group'; hasUnread?: boolean; limit?: number; search?: string }): Promise<LocalChat[]>;
-  startWatching(events: { onMessage: (msg: LocalMessage) => void; onError?: (err: Error) => void }): Promise<void>;
-  stopWatching(): void;
-  close(): Promise<void>;
-}
-
-interface LocalMessage {
-  guid: string;
-  text: string | null;
-  sender: string;
-  senderName?: string;
-  chatId: string;
-  isGroupChat: boolean;
-  isFromMe: boolean;
-  date: Date;
-  attachments: Array<{ id: string; filename: string; mimeType: string; size: number }>;
-}
-
-interface LocalChat {
-  chatId: string;
-  displayName: string;
-  isGroup: boolean;
-  unreadCount: number;
-}
 
 // ---------------------------------------------------------------------------
 // Remote-mode types
@@ -103,24 +66,18 @@ export type MessageEffect = typeof MESSAGE_EFFECTS[keyof typeof MESSAGE_EFFECTS]
 // IMessageChannel
 // ---------------------------------------------------------------------------
 
-export type IMessageMode = 'disabled' | 'local' | 'remote';
-
 export interface IMessageConfig {
-  mode: IMessageMode;
-  serverUrl?: string;
-  apiKey?: string;
+  serverUrl: string;
+  apiKey: string;
 }
 
 export class IMessageChannel implements Channel {
   readonly type = 'imessage' as const;
 
-  private mode: IMessageMode = 'disabled';
+  private enabled = false;
   private serverUrl = '';
   private apiKey = '';
 
-  private localSdk: LocalSDK | null = null;
-
-  // Remote mode — raw socket + server URL for REST calls
   private socket: Socket | null = null;
   private processedGuids = new Map<string, number>();
   private guidCleanupTimer: ReturnType<typeof setInterval> | null = null;
@@ -134,9 +91,20 @@ export class IMessageChannel implements Channel {
   // -----------------------------------------------------------------------
 
   configure(config: IMessageConfig): void {
-    this.mode = config.mode;
-    this.serverUrl = (config.serverUrl ?? '').replace(/\/+$/, '');
-    this.apiKey = config.apiKey ?? '';
+    this.serverUrl = config.serverUrl.replace(/\/+$/, '');
+    this.apiKey = config.apiKey;
+    this.enabled = !!(this.serverUrl && this.apiKey);
+  }
+
+  disable(): void {
+    this.stop();
+    this.enabled = false;
+    this.serverUrl = '';
+    this.apiKey = '';
+  }
+
+  isEnabled(): boolean {
+    return this.enabled;
   }
 
   // -----------------------------------------------------------------------
@@ -144,8 +112,8 @@ export class IMessageChannel implements Channel {
   // -----------------------------------------------------------------------
 
   start(): void {
-    if (this.mode === 'disabled') {
-      console.warn('[iMessage] start() called but mode is disabled');
+    if (!this.enabled) {
+      console.warn('[iMessage] start() called but not enabled');
       return;
     }
     if (this.running) {
@@ -153,18 +121,10 @@ export class IMessageChannel implements Channel {
       return;
     }
     this.running = true;
-
-    console.log(`[iMessage] starting in ${this.mode} mode`);
-
-    if (this.mode === 'local') {
-      this._startLocal().catch((err) => {
-        console.error('[iMessage] local start error:', err);
-      });
-    } else {
-      this._startRemote().catch((err) => {
-        console.error('[iMessage] remote start error:', err);
-      });
-    }
+    console.log('[iMessage] starting');
+    this._startRemote().catch((err) => {
+      console.error('[iMessage] start error:', err);
+    });
   }
 
   stop(): void {
@@ -175,11 +135,6 @@ export class IMessageChannel implements Channel {
       this.guidCleanupTimer = null;
     }
     this.processedGuids.clear();
-    if (this.mode === 'local' && this.localSdk) {
-      this.localSdk.stopWatching();
-      this.localSdk.close().catch(() => {});
-      this.localSdk = null;
-    }
     if (this.socket) {
       this.socket.removeAllListeners();
       this.socket.disconnect();
@@ -188,17 +143,11 @@ export class IMessageChannel implements Channel {
   }
 
   async send(groupId: string, text: string): Promise<void> {
-    if (this.mode === 'local') {
-      const sdk = this._requireLocal('send');
-      await sdk.send(this._localTarget(groupId), text);
-    } else if (this.mode === 'remote') {
-      const chatGuid = this._chatGuid(groupId);
-      await this._post('/api/v1/message/text', { chatGuid, message: text });
-    }
+    const chatGuid = this._chatGuid(groupId);
+    await this._post('/api/v1/message/text', { chatGuid, message: text });
   }
 
   setTyping(groupId: string, typing: boolean): void {
-    if (this.mode !== 'remote') return;
     const chatGuid = this._chatGuid(groupId);
     const encoded = encodeURIComponent(chatGuid);
     if (typing) {
@@ -216,31 +165,7 @@ export class IMessageChannel implements Channel {
   }
 
   // -----------------------------------------------------------------------
-  // Extended local-mode methods
-  // -----------------------------------------------------------------------
-
-  async getMessagesLocal(groupId: string, opts?: { limit?: number; since?: Date }): Promise<LocalMessage[]> {
-    const sdk = this._requireLocal('getMessagesLocal');
-    const result = await sdk.getMessages({ chatId: this._chatGuid(groupId), ...opts });
-    return result.messages;
-  }
-
-  async searchMessagesLocal(keyword: string, opts?: { limit?: number }): Promise<LocalMessage[]> {
-    const sdk = this._requireLocal('searchMessagesLocal');
-    const result = await sdk.getMessages({ search: keyword, limit: opts?.limit ?? 20 });
-    return result.messages;
-  }
-
-  async getUnreadMessagesLocal(): Promise<{ groups: Array<{ sender: string; messages: LocalMessage[] }>; total: number; senderCount: number }> {
-    return this._requireLocal('getUnreadMessagesLocal').getUnreadMessages();
-  }
-
-  async listChatsLocal(opts?: { type?: 'all' | 'dm' | 'group'; hasUnread?: boolean; limit?: number; search?: string }): Promise<LocalChat[]> {
-    return this._requireLocal('listChatsLocal').listChats(opts);
-  }
-
-  // -----------------------------------------------------------------------
-  // Extended remote-mode methods (REST)
+  // Extended methods (REST)
   // -----------------------------------------------------------------------
 
   async editMessage(messageGuid: string, editedMessage: string): Promise<void> {
@@ -269,7 +194,7 @@ export class IMessageChannel implements Channel {
     });
   }
 
-  async getMessagesRemote(groupId: string, opts?: { limit?: number; sort?: 'ASC' | 'DESC'; before?: number; after?: number }): Promise<RemoteMessage[]> {
+  async getMessages(groupId: string, opts?: { limit?: number; sort?: 'ASC' | 'DESC'; before?: number; after?: number }): Promise<RemoteMessage[]> {
     const res = await this._post('/api/v1/message/query', {
       chatGuid: this._chatGuid(groupId),
       with: ['chat', 'handle', 'attachment'],
@@ -294,33 +219,8 @@ export class IMessageChannel implements Channel {
   }
 
   // -----------------------------------------------------------------------
-  // Private — start helpers
+  // Private — socket connection
   // -----------------------------------------------------------------------
-
-  private async _startLocal(): Promise<void> {
-    const localPkg = '@photon-ai/imessage-kit';
-    const { IMessageSDK } = await import(/* @vite-ignore */ localPkg);
-    const sdk = new IMessageSDK() as unknown as LocalSDK;
-    this.localSdk = sdk;
-
-    await sdk.startWatching({
-      onMessage: (msg: LocalMessage) => {
-        if (msg.isFromMe) return;
-        if (!this.messageCallback) return;
-        this.messageCallback({
-          id: msg.guid,
-          groupId: `im:${msg.chatId}`,
-          sender: msg.sender,
-          content: msg.text ?? '',
-          timestamp: msg.date.getTime(),
-          channel: 'imessage',
-        });
-      },
-      onError: (err: Error) => {
-        console.error('[iMessage] watcher error:', err);
-      },
-    });
-  }
 
   private async _startRemote(): Promise<void> {
     if (!this.serverUrl) {
@@ -329,7 +229,6 @@ export class IMessageChannel implements Channel {
     }
     console.log('[iMessage] connecting to', this.serverUrl, 'hasKey:', !!this.apiKey);
 
-    // Clean up any existing socket before creating a new one
     if (this.socket) {
       this.socket.removeAllListeners();
       this.socket.disconnect();
@@ -345,13 +244,10 @@ export class IMessageChannel implements Channel {
     });
     this.socket = socket;
 
-    // Wire up ALL listeners BEFORE calling connect(), so we never miss events.
-
     socket.on('connect', () => {
       console.log('[iMessage] socket connected (id:', socket.id + '), waiting for server ready...');
     });
 
-    // Different server versions emit different ready events
     const onReady = () => {
       console.log('[iMessage] server ready — listening for new-message events');
     };
@@ -402,13 +298,11 @@ export class IMessageChannel implements Channel {
       }
     });
 
-    // Log any unhandled events for debugging
     socket.onAny((event, ...args) => {
       if (['connect', 'hello-world', 'auth-ok', 'connect_error', 'auth-error', 'new-message', 'disconnect'].includes(event)) return;
       console.log('[iMessage] event:', event, JSON.stringify(args).slice(0, 200));
     });
 
-    // Periodically prune stale guids to prevent unbounded memory growth
     if (!this.guidCleanupTimer) {
       this.guidCleanupTimer = setInterval(() => {
         const cutoff = Date.now() - IMessageChannel.GUID_TTL_MS;
@@ -418,7 +312,6 @@ export class IMessageChannel implements Channel {
       }, 60_000);
     }
 
-    // NOW connect — all listeners are already in place
     socket.connect();
   }
 
@@ -469,20 +362,5 @@ export class IMessageChannel implements Channel {
   private _chatGuid(groupId: string): string {
     const raw = groupId.startsWith('im:') ? groupId.slice(3) : groupId;
     return raw.replace(/^iMessage;/, 'any;');
-  }
-
-  private _localTarget(groupId: string): string {
-    const chatGuid = this._chatGuid(groupId);
-    if (chatGuid.includes(';+;chat') || (chatGuid.startsWith('chat') && !chatGuid.includes(';'))) {
-      return chatGuid;
-    }
-    return chatGuid.split(';').pop() ?? chatGuid;
-  }
-
-  private _requireLocal(method: string): LocalSDK {
-    if (!this.localSdk) {
-      throw new Error(`[iMessage] ${method}: local SDK not initialised. Call start() first and ensure mode is 'local'.`);
-    }
-    return this.localSdk;
   }
 }

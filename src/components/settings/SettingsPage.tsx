@@ -13,7 +13,6 @@ import { getStorageEstimate, requestPersistentStorage } from '../../storage.js';
 import { decryptValue } from '../../crypto.js';
 import { getOrchestrator } from '../../stores/orchestrator-store.js';
 import { useThemeStore, type ThemeChoice } from '../../stores/theme-store.js';
-import type { IMessageMode } from '../../channels/imessage.js';
 
 const MODELS = [
   { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
@@ -48,8 +47,8 @@ export function SettingsPage() {
   const [telegramChatIds, setTelegramChatIds] = useState('');
   const [telegramSaved, setTelegramSaved] = useState(false);
 
-  // Photon iMessage
-  const [imessageMode, setImessageMode] = useState<IMessageMode | ''>('');
+  // iMessage
+  const [imessageEnabled, setImessageEnabled] = useState(false);
   const [imessageServerUrl, setImessageServerUrl] = useState('');
   const [imessageApiKey, setImessageApiKey] = useState('');
   const [imessageApiKeyMasked, setImessageApiKeyMasked] = useState(true);
@@ -90,13 +89,12 @@ export function SettingsPage() {
         }
       }
 
-      // Photon iMessage
-      const storedMode = (await getConfig(CONFIG_KEYS.IMESSAGE_MODE)) as IMessageMode | '';
-      if (storedMode) setImessageMode(storedMode);
+      // iMessage
       const storedServerUrl = await getConfig(CONFIG_KEYS.IMESSAGE_SERVER_URL);
       if (storedServerUrl) setImessageServerUrl(storedServerUrl);
       const storedImApiKey = await getConfig(CONFIG_KEYS.IMESSAGE_API_KEY);
       if (storedImApiKey) setImessageApiKey(storedImApiKey);
+      if (storedServerUrl && storedImApiKey) setImessageEnabled(true);
 
       // Storage
       const est = await getStorageEstimate();
@@ -135,19 +133,16 @@ export function SettingsPage() {
   }
 
   async function handleIMessageSave() {
-    if (!imessageMode) return;
-    await orch.configureIMessage(
-      imessageMode,
-      imessageMode === 'remote' ? imessageServerUrl.trim() : undefined,
-      imessageMode === 'remote' ? imessageApiKey.trim() : undefined,
-    );
+    if (!imessageServerUrl.trim() || !imessageApiKey.trim()) return;
+    await orch.configureIMessage(imessageServerUrl.trim(), imessageApiKey.trim());
+    setImessageEnabled(true);
     setImessageSaved(true);
     setTimeout(() => setImessageSaved(false), 2000);
   }
 
   async function handleIMessageDisable() {
     await orch.disableIMessage();
-    setImessageMode('');
+    setImessageEnabled(false);
     setImessageServerUrl('');
     setImessageApiKey('');
     setImessageDisabled(true);
@@ -160,11 +155,7 @@ export function SettingsPage() {
   }
 
   const storagePercent = storageQuota > 0 ? (storageUsage / storageQuota) * 100 : 0;
-  const imessageRemoteValid =
-    imessageMode === 'remote'
-      ? imessageServerUrl.trim().length > 0 && imessageApiKey.trim().length > 0
-      : true;
-  const imessageSaveDisabled = !imessageMode || !imessageRemoteValid;
+  const imessageSaveDisabled = !imessageServerUrl.trim() || !imessageApiKey.trim();
 
   return (
     <div className="h-full overflow-y-auto p-4 sm:p-6 max-w-3xl mx-auto space-y-4">
@@ -304,84 +295,50 @@ export function SettingsPage() {
         </div>
       </div>
 
-      {/* ---- Photon iMessage ---- */}
+      {/* ---- iMessage ---- */}
       <div className="card card-bordered bg-base-200">
         <div className="card-body p-4 sm:p-6 gap-3">
           <h3 className="card-title text-base gap-2">
-            <MessageCircle className="w-4 h-4" /> Photon iMessage
+            <MessageCircle className="w-4 h-4" /> iMessage
           </h3>
 
-          {/* Mode selector */}
           <fieldset className="fieldset">
             <legend className="fieldset-legend">Mode</legend>
-            <select
-              className="select select-bordered select-sm w-full"
-              value={imessageMode}
-              onChange={(e) => setImessageMode(e.target.value as IMessageMode | '')}
-            >
-              <option value="">Disabled</option>
-              <option value="local">
-                Local — @photon-ai/imessage-kit (macOS, direct DB access)
-              </option>
-              <option value="remote">
-                Remote — Photon server (socket.io)
-              </option>
-            </select>
+            <div className="text-sm opacity-70">Remote (Photon managed)</div>
             <p className="fieldset-label opacity-60">
-              Local mode reads the iMessage database directly on macOS (no server needed).
-              Remote mode connects to a Photon server and unlocks advanced features such as
-              edit, unsend, tapbacks, effects, and typing indicators.
+              Connects to a Photon iMessage server via Socket.IO. Supports
+              send, edit, unsend, tapbacks, effects, typing indicators, and polls.
             </p>
           </fieldset>
 
-          {/* Remote-only fields */}
-          {imessageMode === 'remote' && (
-            <>
-              <fieldset className="fieldset">
-                <legend className="fieldset-legend">Server URL</legend>
-                <input
-                  type="url"
-                  className="input input-bordered input-sm w-full font-mono"
-                  placeholder="https://your-photon-server.example.com"
-                  value={imessageServerUrl}
-                  onChange={(e) => setImessageServerUrl(e.target.value)}
-                />
-                <p className="fieldset-label opacity-60">
-                  URL of your Photon iMessage server
-                </p>
-              </fieldset>
-              <fieldset className="fieldset">
-                <legend className="fieldset-legend">API Key</legend>
-                <div className="flex gap-2">
-                  <input
-                    type={imessageApiKeyMasked ? 'password' : 'text'}
-                    className="input input-bordered input-sm w-full flex-1 font-mono"
-                    placeholder="your-api-key"
-                    value={imessageApiKey}
-                    onChange={(e) => setImessageApiKey(e.target.value)}
-                  />
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => setImessageApiKeyMasked(!imessageApiKeyMasked)}
-                  >
-                    {imessageApiKeyMasked ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-                  </button>
-                </div>
-              </fieldset>
-            </>
-          )}
-
-          {/* Local mode info */}
-          {imessageMode === 'local' && (
-            <div className="alert alert-info text-sm py-2 px-3">
-              <span>
-                Local mode requires macOS with Full Disk Access granted to your browser
-                or the application running OpenBrowserClaw.
-                Install <code className="font-mono">@photon-ai/imessage-kit</code> as a
-                dependency before enabling.
-              </span>
+          <fieldset className="fieldset">
+            <legend className="fieldset-legend">Server URL</legend>
+            <input
+              type="url"
+              className="input input-bordered input-sm w-full font-mono"
+              placeholder="https://your-server.imsgd.photon.codes"
+              value={imessageServerUrl}
+              onChange={(e) => setImessageServerUrl(e.target.value)}
+            />
+          </fieldset>
+          <fieldset className="fieldset">
+            <legend className="fieldset-legend">API Key</legend>
+            <div className="flex gap-2">
+              <input
+                type={imessageApiKeyMasked ? 'password' : 'text'}
+                className="input input-bordered input-sm w-full flex-1 font-mono"
+                placeholder="your-api-key"
+                value={imessageApiKey}
+                onChange={(e) => setImessageApiKey(e.target.value)}
+              />
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => setImessageApiKeyMasked(!imessageApiKeyMasked)}
+              >
+                {imessageApiKeyMasked ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+              </button>
             </div>
-          )}
+          </fieldset>
 
           <div className="flex items-center gap-2 flex-wrap">
             <button
@@ -391,7 +348,7 @@ export function SettingsPage() {
             >
               Save iMessage Config
             </button>
-            {imessageMode && (
+            {imessageEnabled && (
               <button
                 className="btn btn-ghost btn-sm text-error"
                 onClick={handleIMessageDisable}
@@ -412,9 +369,8 @@ export function SettingsPage() {
           </div>
 
           <p className="text-xs opacity-50">
-            Incoming iMessage conversations will appear as separate chat groups with the
-            prefix <code className="font-mono">im:</code>.
-            Trigger the assistant by mentioning <code className="font-mono">@{assistantName}</code> in any iMessage.
+            iMessage conversations appear as separate chat groups.
+            Every incoming message triggers a response automatically — no @mention needed.
           </p>
         </div>
       </div>
