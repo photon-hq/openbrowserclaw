@@ -99,7 +99,7 @@ Optional. Works entirely via HTTPS — no WebSockets or special protocols.
 
 ## iMessage
 
-Optional. Connects to a remote iMessage server via Socket.IO + REST. Supports send, edit, unsend, tapback reactions, message effects, typing indicators, and polls.
+Optional. Connects to a remote iMessage server via Socket.IO + REST.
 
 **Requirements:**
 - An iMessage server

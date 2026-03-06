@@ -306,8 +306,7 @@ export function SettingsPage() {
             <legend className="fieldset-legend">Mode</legend>
             <div className="text-sm opacity-70">Remote</div>
             <p className="fieldset-label opacity-60">
-              Connects to a remote iMessage server via Socket.IO. Supports
-              send, edit, unsend, tapbacks, effects, typing indicators, and polls.
+              Connects to a remote iMessage server via Socket.IO.
             </p>
           </fieldset>
 
