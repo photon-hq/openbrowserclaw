@@ -366,11 +366,14 @@ export class Orchestrator {
     if (this.destroyed) return;
 
     // Dedup: drop messages with the same id seen within the last 60 s
-    if (msg.id && this.recentInboundIds.has(msg.id)) return;
     if (msg.id) {
-      this.recentInboundIds.set(msg.id, Date.now());
+      const now = Date.now();
+      const seenAt = this.recentInboundIds.get(msg.id);
+      if (seenAt && now - seenAt < 60_000) return;
+
+      this.recentInboundIds.set(msg.id, now);
       if (this.recentInboundIds.size > 500) {
-        const cutoff = Date.now() - 60_000;
+        const cutoff = now - 60_000;
         for (const [id, ts] of this.recentInboundIds) {
           if (ts < cutoff) this.recentInboundIds.delete(id);
         }

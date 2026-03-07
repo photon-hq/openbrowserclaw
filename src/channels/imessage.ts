@@ -182,7 +182,9 @@ export class IMessageChannel implements Channel {
       if (msg.associatedMessageGuid) return;
       if (!msg.text?.trim()) return;
 
-      const chatGuid = msg.chats?.[0]?.guid ?? '';
+      const chatGuid = msg.chats?.[0]?.guid;
+      if (!chatGuid) return;
+
       this.messageCallback({
         id: msg.guid,
         groupId: `im:${chatGuid}`,
@@ -216,8 +218,31 @@ export class IMessageChannel implements Channel {
   // Private — REST helpers
   // -----------------------------------------------------------------------
 
+  private static readonly REQUEST_TIMEOUT_MS = 15_000;
+
+  private async _request(path: string, init: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      IMessageChannel.REQUEST_TIMEOUT_MS,
+    );
+    try {
+      return await fetch(`${this.serverUrl}${path}`, {
+        ...init,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        throw new Error(`[iMessage] ${init.method ?? 'GET'} ${path} timed out after ${IMessageChannel.REQUEST_TIMEOUT_MS}ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
   private async _post(path: string, body: unknown): Promise<unknown> {
-    const res = await fetch(`${this.serverUrl}${path}`, {
+    const res = await this._request(path, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -234,7 +259,7 @@ export class IMessageChannel implements Channel {
   }
 
   private async _delete(path: string): Promise<void> {
-    await fetch(`${this.serverUrl}${path}`, {
+    await this._request(path, {
       method: 'DELETE',
       headers: this.apiKey ? { 'X-API-Key': this.apiKey } : {},
     });
