@@ -562,7 +562,6 @@ export class Orchestrator {
   }
 
   private async deliverResponse(groupId: string, text: string): Promise<void> {
-    // Save to DB
     const stored: StoredMessage = {
       id: ulid(),
       groupId,
@@ -579,16 +578,17 @@ export class Orchestrator {
     };
     await saveMessage(stored);
 
-    // Route to channel
-    await this.router.send(groupId, text);
+    try {
+      await this.router.send(groupId, text);
+    } catch (err) {
+      console.error(`[${stored.channel}] Failed to deliver response:`, err);
+    }
 
-    // Play notification chime for scheduled task responses
     if (this.pendingScheduledTasks.has(groupId)) {
       this.pendingScheduledTasks.delete(groupId);
       playNotificationChime();
     }
 
-    // Emit for UI
     this.events.emit('message', stored);
     this.events.emit('typing', { groupId, typing: false });
 

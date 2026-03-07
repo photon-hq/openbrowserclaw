@@ -55,6 +55,7 @@ export class IMessageChannel implements Channel {
 
   private messageCallback: MessageCallback | null = null;
   private running = false;
+  private typingTimer: ReturnType<typeof setTimeout> | null = null;
 
   // -----------------------------------------------------------------------
   // Configuration
@@ -86,11 +87,16 @@ export class IMessageChannel implements Channel {
     this.running = true;
     this._startRemote().catch((err) => {
       console.error('[iMessage] start error:', err);
+      this.running = false;
     });
   }
 
   stop(): void {
     this.running = false;
+    if (this.typingTimer) {
+      clearTimeout(this.typingTimer);
+      this.typingTimer = null;
+    }
     if (this.guidCleanupTimer) {
       clearInterval(this.guidCleanupTimer);
       this.guidCleanupTimer = null;
@@ -104,19 +110,27 @@ export class IMessageChannel implements Channel {
   }
 
   async send(groupId: string, text: string): Promise<void> {
+    if (!this.enabled) return;
     const chatGuid = this._chatGuid(groupId);
     await this._post('/api/v1/message/text', { chatGuid, message: text });
   }
 
   setTyping(groupId: string, typing: boolean): void {
+    if (!this.enabled) return;
     const chatGuid = this._chatGuid(groupId);
     const encoded = encodeURIComponent(chatGuid);
     if (typing) {
+      if (this.typingTimer) clearTimeout(this.typingTimer);
       this._post(`/api/v1/chat/${encoded}/typing`, {}).catch(() => {});
-      setTimeout(() => {
+      this.typingTimer = setTimeout(() => {
+        this.typingTimer = null;
         this._delete(`/api/v1/chat/${encoded}/typing`).catch(() => {});
       }, 3000);
     } else {
+      if (this.typingTimer) {
+        clearTimeout(this.typingTimer);
+        this.typingTimer = null;
+      }
       this._delete(`/api/v1/chat/${encoded}/typing`).catch(() => {});
     }
   }
@@ -142,6 +156,9 @@ export class IMessageChannel implements Channel {
       auth: this.apiKey ? { apiKey: this.apiKey } : undefined,
       transports: ['websocket'],
       timeout: 10_000,
+      reconnection: true,
+      reconnectionDelay: 1_000,
+      reconnectionDelayMax: 30_000,
       forceNew: true,
       autoConnect: false,
     });
@@ -153,6 +170,7 @@ export class IMessageChannel implements Channel {
 
     socket.on('auth-error', (err: { message: string; reason?: string }) => {
       console.error('[iMessage] auth-error:', err.message, err.reason ?? '');
+      this.stop();
     });
 
     socket.on('new-message', (msg: RemoteMessage) => {
@@ -162,13 +180,14 @@ export class IMessageChannel implements Channel {
       if (!this.messageCallback) return;
       if (msg.isFromMe) return;
       if (msg.associatedMessageGuid) return;
+      if (!msg.text?.trim()) return;
 
       const chatGuid = msg.chats?.[0]?.guid ?? '';
       this.messageCallback({
         id: msg.guid,
         groupId: `im:${chatGuid}`,
         sender: msg.handle?.address ?? 'unknown',
-        content: msg.text ?? '',
+        content: msg.text,
         timestamp: msg.dateCreated,
         channel: 'imessage',
       });

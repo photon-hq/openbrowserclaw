@@ -315,7 +315,7 @@ export function SettingsPage() {
             <input
               type="url"
               className="input input-bordered input-sm w-full font-mono"
-              placeholder="https://your-server.imsgd.photon.codes"
+              placeholder="https://your-imessage-server.example.com"
               value={imessageServerUrl}
               onChange={(e) => setImessageServerUrl(e.target.value)}
             />
