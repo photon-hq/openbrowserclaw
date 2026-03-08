@@ -5,7 +5,7 @@
 /** Inbound message from any channel */
 export interface InboundMessage {
   id: string;
-  groupId: string; // "br:main", "tg:-100123456", "im:iMessage;-;+1234567890"
+  groupId: string; // "br:main", "tg:-100123456"
   sender: string;
   content: string;
   timestamp: number; // epoch ms
@@ -54,7 +54,7 @@ export interface ConfigEntry {
   value: string; // JSON-encoded or raw string
 }
 
-export type ChannelType = 'browser' | 'telegram' | 'imessage';
+export type ChannelType = 'browser' | 'telegram';
 
 /** Channel interface — matches NanoClaw's Channel abstraction */
 export interface Channel {
